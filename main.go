@@ -4,9 +4,11 @@ import (
 	"fmt"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/go-chi/chi/middleware"
 	"github.com/go-chi/chi/v5"
+	"github.com/go-redis/redis"
 	"github.com/lithammer/shortuuid"
 )
 
@@ -16,8 +18,22 @@ type Mapper struct {
 }
 
 var urlMapper Mapper
+var redisClient *redis.Client
 
 func init() {
+	// Create a new client
+	redisClient = redis.NewClient(&redis.Options{
+		Addr:     "localhost:6379", // Use default Addr
+		Password: "",               // No password set
+		DB:       0,                // Use default DB
+	})
+
+	// Ping the Redis server
+	pong, err := redisClient.Ping().Result()
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println(pong)
 	//initialize mapper
 	urlMapper = Mapper{
 		Mapping: make(map[string]string),
@@ -25,6 +41,7 @@ func init() {
 }
 
 func main() {
+
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
 	r.Get("/", func(w http.ResponseWriter, r *http.Request) {
@@ -74,6 +91,8 @@ func insertMapping(key, u string) {
 	defer urlMapper.Lock.Unlock()
 
 	urlMapper.Mapping[key] = u
+	//Storing in cache
+	redisClient.Set(u, key, 24*time.Hour)
 }
 
 func fetchMapping(key string) string {
