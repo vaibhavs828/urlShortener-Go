@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"log"
 	"net/http"
 	"sync"
 	"time"
@@ -60,6 +61,12 @@ func createShortURLHandler(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("URL field is empty"))
 		return
 	}
+	//check if key already present
+	if redisClient.Exists(url).Val() == 1 {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(fmt.Sprintf("http://localhost:3000/short/%s", redisClient.Get(url).Val())))
+		return
+	}
 	//generate key
 	key := shortuuid.New()
 	//insert mapping
@@ -92,12 +99,17 @@ func insertMapping(key, u string) {
 
 	urlMapper.Mapping[key] = u
 	//Storing in cache
+	log.Println("Storing the url in cache")
 	redisClient.Set(u, key, 24*time.Hour)
 }
 
 func fetchMapping(key string) string {
 	urlMapper.Lock.Lock()
 	defer urlMapper.Lock.Unlock()
+	if redisClient.Exists(key).Val() == 1 {
+		log.Println("Fetched the url from cache")
+		return redisClient.Get(key).Val()
+	}
 
 	return urlMapper.Mapping[key]
 }
