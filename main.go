@@ -50,12 +50,16 @@ func main() {
 	})
 	r.Get("/short/{key}", redirectHandler)
 	r.Post("/short-url", createShortURLHandler)
+
+	//Add a route for a custom made url
+	r.Post("/custom-short-url", createCustomShortURLHanler)
+
 	http.ListenAndServe(":3000", r)
 }
 
 func createShortURLHandler(w http.ResponseWriter, r *http.Request) {
 	r.ParseForm()
-	url := r.Form.Get("URL")
+	url := r.Form.Get("url")
 	if url == "" {
 		w.WriteHeader(http.StatusBadRequest)
 		w.Write([]byte("URL field is empty"))
@@ -73,6 +77,33 @@ func createShortURLHandler(w http.ResponseWriter, r *http.Request) {
 	insertMapping(key, url)
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte(fmt.Sprintf("http://localhost:3000/short/%s", key)))
+}
+
+func createCustomShortURLHanler(w http.ResponseWriter, r *http.Request) {
+	r.ParseForm()
+	url := r.Form.Get("url")
+	if url == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte("URL field is empty"))
+		return
+	}
+	customPath := r.Form.Get("custom_url")
+	if url == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte("custom_path field is empty"))
+		return
+	}
+	// Check if customPath is already used
+	if redisClient.Exists(customPath).Val() == 1 || urlMapper.Mapping[customPath] != "" {
+		w.WriteHeader(http.StatusConflict)
+		w.Write([]byte("Custom path already in use"))
+		return
+	}
+
+	// Insert custom mapping
+	insertMapping(customPath, url)
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte(fmt.Sprintf("http://localhost:3000/short/%s", customPath)))
 }
 
 func redirectHandler(w http.ResponseWriter, r *http.Request) {
