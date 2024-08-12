@@ -1,11 +1,13 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
 	"sync"
 	"time"
+	"urlShortener/channels"
 
 	"github.com/go-chi/chi/middleware"
 	"github.com/go-chi/chi/v5"
@@ -16,6 +18,11 @@ import (
 type Mapper struct {
 	Mapping map[string]string
 	Lock    sync.Mutex
+}
+type URLAnalytics struct {
+	URL      string
+	ShortURL string
+	//Frequency string
 }
 
 var urlMapper Mapper
@@ -35,6 +42,11 @@ func init() {
 		panic(err)
 	}
 	fmt.Println(pong)
+	//Connect to RMQ
+	err = channels.QueueConnect("ANALYTICS_QUEUE", true)
+	if err != nil {
+		log.Fatal("Error in creating Analytics Queue - ", err)
+	}
 	//initialize mapper
 	urlMapper = Mapper{
 		Mapping: make(map[string]string),
@@ -132,6 +144,20 @@ func insertMapping(key, u string) {
 	//Storing in cache
 	log.Println("Storing the url in cache")
 	redisClient.Set(u, key, 24*time.Hour)
+	//Add to Analytics
+	analyticsData := URLAnalytics{
+		URL:      u,
+		ShortURL: fmt.Sprintf("http://localhost:3000/short/%s", key),
+		//can add remaining data
+	}
+	analyticsDataByte, err := json.Marshal(analyticsData)
+	if err != nil {
+		log.Panic("Unable to marshal analytics data - ", err)
+	}
+	err = channels.Publisher("ANALYTICS_QUEUE", analyticsDataByte)
+	if err != nil {
+		log.Panic("Unable to publish to RMQ - ", err)
+	}
 }
 
 func fetchMapping(key string) string {
