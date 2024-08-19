@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -13,6 +14,9 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-redis/redis"
 	"github.com/lithammer/shortuuid"
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
 type Mapper struct {
@@ -20,13 +24,15 @@ type Mapper struct {
 	Lock    sync.Mutex
 }
 type URLAnalytics struct {
-	URL      string
-	ShortURL string
-	//Frequency string
+	URL        string `bson:"url"`
+	ShortURL   string `bson:"short_url"`
+	ClickCount int    `bson:"click_count"`
 }
 
 var urlMapper Mapper
 var redisClient *redis.Client
+var mongoClient *mongo.Client
+var analyticsCollection *mongo.Collection
 
 func init() {
 	// Create a new client
@@ -51,6 +57,13 @@ func init() {
 	urlMapper = Mapper{
 		Mapping: make(map[string]string),
 	}
+	//Conneting to mongodb
+	mongoClient, err = mongo.Connect(context.TODO(), options.Client().ApplyURI("mongodb://localhost:27017"))
+	if err != nil {
+		log.Fatal("Error in connecting to mongodb - ", err)
+	}
+	// Get the analytics collection
+	analyticsCollection = mongoClient.Database("urlshortener").Collection("analytics")
 }
 
 func main() {
@@ -133,6 +146,15 @@ func redirectHandler(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("URL does not exists"))
 		return
 	}
+
+	// Increment click count in MongoDB
+	filter := bson.M{"short_url": fmt.Sprintf("http://localhost:3000/short/%s", key)}
+	update := bson.M{"$inc": bson.M{"click_count": 1}}
+	_, err := analyticsCollection.UpdateOne(context.TODO(), filter, update)
+	if err != nil {
+		log.Println("Error updating click count:", err)
+	}
+
 	http.Redirect(w, r, url, http.StatusFound)
 }
 
@@ -144,20 +166,10 @@ func insertMapping(key, u string) {
 	//Storing in cache
 	log.Println("Storing the url in cache")
 	redisClient.Set(u, key, 24*time.Hour)
+
 	//Add to Analytics
-	analyticsData := URLAnalytics{
-		URL:      u,
-		ShortURL: fmt.Sprintf("http://localhost:3000/short/%s", key),
-		//can add remaining data
-	}
-	analyticsDataByte, err := json.Marshal(analyticsData)
-	if err != nil {
-		log.Panic("Unable to marshal analytics data - ", err)
-	}
-	err = channels.Publisher("ANALYTICS_QUEUE", analyticsDataByte)
-	if err != nil {
-		log.Panic("Unable to publish to RMQ - ", err)
-	}
+	go analytics(key, u)
+
 }
 
 func fetchMapping(key string) string {
@@ -169,4 +181,40 @@ func fetchMapping(key string) string {
 	}
 
 	return urlMapper.Mapping[key]
+}
+
+func analytics(key, u string) {
+	var result URLAnalytics
+	//Get the value of click count from mongodb
+	filter := bson.M{"short_url": fmt.Sprintf("http://localhost:3000/short/%s", key)}
+	err := analyticsCollection.FindOne(context.TODO(), filter).Decode(&result)
+	if err != nil {
+		if err == mongo.ErrNoDocuments {
+			// Handle the case where no document was found
+			log.Println("No document found with the given short URL")
+			return
+		}
+		// Handle other errors
+		log.Println("Error finding document:", err)
+		return
+	}
+
+	analyticsData := URLAnalytics{
+		URL:        u,
+		ShortURL:   fmt.Sprintf("http://localhost:3000/short/%s", key),
+		ClickCount: result.ClickCount,
+	}
+	_, err = analyticsCollection.InsertOne(context.TODO(), analyticsData)
+	if err != nil {
+		log.Panic("Unable to insert analytics data to MongoDB:", err)
+	}
+
+	analyticsDataByte, err := json.Marshal(analyticsData)
+	if err != nil {
+		log.Panic("Unable to marshal analytics data - ", err)
+	}
+	err = channels.Publisher("ANALYTICS_QUEUE", analyticsDataByte)
+	if err != nil {
+		log.Panic("Unable to publish to RMQ - ", err)
+	}
 }
